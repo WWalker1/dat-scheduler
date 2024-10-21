@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2 class="text-center">{{ month_name }} {{ year }} Calendar</h2>
+        
+        {% if current_user.is_admin %}
+        <div class="text-right">
+            <a href="{{ url_for('manage_requests') }}" class="btn btn-warning">Manage Requests</a>
+        </div>
+        {% endif %}
+        
+        <a href="{{ url_for('request_slot') }}" class="btn btn-primary">Request Time Slot</a>
+        
+        <table class="table table-bordered calendar">
+            <thead>
+                <tr>
+                    <th>Sun</th>
+                    <th>Mon</th>
+                    <th>Tue</th>
+                    <th>Wed</th>
+                    <th>Thu</th>
+                    <th>Fri</th>
+                    <th>Sat</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for week in calendar %}
+                <tr>
+                    {% for day in week %}
+                    <td class="{{ 'calendar-day' if day != 0 else 'calendar-empty' }}">
+                        {% if day != 0 %}
+                            {{ day }}
+                            {% for booking in bookings %}
+                                {% if booking.start_time.day == day and booking.start_time.month == month and booking.start_time.year == year %}
+                                    <div class="booking-info">
+                                        {{ booking.employee_name }}<br>
+                                        {{ booking.start_time.strftime('%H:%M') }} - 
+                                        {{ booking.end_time.strftime('%H:%M') }}
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+.calendar-day {
+    height: 100px;
+    vertical-align: top !important;
+}
+.calendar-empty {
+    background-color: #f4f4f4;
+}
+.booking-info {
+    background-color: #007bff;
+    color: white;
+    margin: 2px;
+    padding: 2px;
+    border-radius: 3px;
+    font-size: 0.8em;
+}
+</style>
+{% endblock %}

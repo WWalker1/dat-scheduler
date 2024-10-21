@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2 class="text-center">{{ month_name }} {{ year }} Calendar</h2>
+        
+        {% if current_user.is_admin %}
+        <div class="text-right">
+            <a href="{{ url_for('manage_requests') }}" class="btn btn-warning">Manage Requests</a>
+        </div>
+        {% endif %}
+        
+        <a href="{{ url_for('request_slot') }}" class="btn btn-primary">Request Time Slot</a>
+        
+        <table class="table table-bordered calendar">
+            <thead>
+                <tr>
+                    <th>Sun</th>
+                    <th>Mon</th>
+                    <th>Tue</th>
+                    <th>Wed</th>
+                    <th>Thu</th>
+                    <th>Fri</th>
+                    <th>Sat</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for week in calendar %}
+                <tr>
+                    {% for day in week %}
+                    <td class="{{ 'calendar-day' if day != 0 else 'calendar-empty' }}">
+                        {% if day != 0 %}
+                            {{ day }}
+                            {% for booking in bookings %}
+                                {% if booking.start_time.day == day and booking.start_time.month == month and booking.start_time.year == year %}
+                                    <div class="booking-info">
+                                        {{ booking.employee_name }}<br>
+                                        {{ booking.start_time.strftime('%H:%M') }} - 
+                                        {{ booking.end_time.strftime('%H:%M') }}
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+.calendar-day {
+    height: 100px;
+    vertical-align: top !important;
+}
+.calendar-empty {
+    background-color: #f4f4f4;
+}
+.booking-info {
+    background-color: #007bff;
+    color: white;
+    margin: 2px;
+    padding: 2px;
+    border-radius: 3px;
+    font-size: 0.8em;
+}
+</style>
+{% endblock %}
+```
+
+`templates/request_slot.html`:
+```html
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6 col-md-offset-3">
+        <h2>Request Time Slot</h2>
+        <form method="POST">
+            <div class="form-group">
+                <label for="start_time">Start Time:</label>
+                <input type="datetime-local" class="form-control" id="start_time" name="start_time" required>
+            </div>
+            <div class="form-group">
+                <label for="end_time">End Time:</label>
+                <input type="datetime-local" class="form-control" id="end_time" name="end_time" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Submit Request</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+```
+
+`templates/manage_requests.html`:
+```html
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-10 col-md-offset-1">
+        <h2>Manage Time Slot Requests</h2>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Employee</th>
+                    <th>Start Time</th>
+                    <th>End Time</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for request in requests %}
+                <tr>
+                    <td>{{ request.employee_name }}</td>
+                    <td>{{ request.start_time.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td>{{ request.end_time.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td>
+                        <form method="POST" action="{{ url_for('approve_request', request_id=request.id) }}" style="display:inline;">
+                            <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                        </form>
+                        <form method="POST" action="{{ url_for('reject_request', request_id=request.id) }}" style="display:inline;">
+                            <button type="submit" class="btn btn-danger btn-sm">Reject</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+```
+
+Update the base template to include logout:
+```html
+{% extends "bootstrap/base.html" %}
+
+{% block navbar %}
+<nav class="navbar navbar-default">
+    <div class="container">
+        <div class="navbar-header">
+            <a class="navbar-brand" href="{{ url_for('calendar_view') }}">Work Scheduler</a>
+        </div>
+        <ul class="nav navbar-nav navbar-right">
+            {% if current_user.is_authenticated %}
+            <li><a href="{{ url_for('logout') }}">Logout</a></li>
+            {% endif %}
+        </ul>
+    </div>
+</nav>
+{% endblock %}
