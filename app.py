@@ -51,8 +51,8 @@ def reset_database():
         db.create_all()
         
         # Create your admin account
-        admin = User(username='your_username', is_admin=True)
-        admin.set_password('your_secure_password')
+        admin = User(username='Weston', is_admin=True)
+        admin.set_password('410320')
         db.session.add(admin)
         db.session.commit()
         print("Database reset and admin user created")
