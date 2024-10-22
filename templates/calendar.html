@@ -4,7 +4,10 @@
 <div class="row">
     <div class="col-md-12">
         <h2 class="text-center">{{ month_name }} {{ year }} Calendar</h2>
-        
+        <div class="text-center">
+            <a href="{{ url_for('calendar_view_month', year=year-1 if month==1 else year, month=12 if month==1 else month-1) }}" class="btn btn-default">&lt; Previous Month</a>
+            <a href="{{ url_for('calendar_view_month', year=year+1 if month==12 else year, month=1 if month==12 else month+1) }}" class="btn btn-default">Next Month &gt;</a>
+        </div>
         {% if current_user.is_admin %}
         <div class="text-right">
             <a href="{{ url_for('manage_requests') }}" class="btn btn-warning">Manage Requests</a>
@@ -38,6 +41,12 @@
                                         {{ booking.employee_name }}<br>
                                         {{ booking.start_time.strftime('%H:%M') }} - 
                                         {{ booking.end_time.strftime('%H:%M') }}
+                                        
+                                        {% if current_user.is_admin %}
+                                        <form method="POST" action="{{ url_for('delete_booking', booking_id=booking.id) }}" style="display:inline;">
+                                            <button type="submit" class="btn btn-danger btn-xs">Delete</button>
+                                        </form>
+                                        {% endif %}
                                     </div>
                                 {% endif %}
                             {% endfor %}

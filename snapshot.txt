@@ -1,0 +1,643 @@
+# File: app.py
+
+from flask import Flask, render_template, request, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask_migrate import Migrate
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime, timedelta
+import calendar
+from functools import wraps
+import os
+
+
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///scheduler.db').replace('postgres://', 'postgresql://')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fallback_secret_key')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False)
+    bookings = db.relationship('Booking', backref='user', lazy=True)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+class Booking(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    employee_name = db.Column(db.String(100), nullable=False)
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=False)
+    status = db.Column(db.String(20), default='approved')  # Add this line
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+# Add a function to recreate the database
+def reset_database():
+    with app.app_context():
+        # Drop all existing tables
+        db.drop_all()
+        
+        # Create all tables
+        db.create_all()
+        
+        # Create your admin account
+        admin = User(username='Weston', is_admin=True)
+        admin.set_password('410320')
+        db.session.add(admin)
+        db.session.commit()
+        print("Database reset and admin user created")
+
+# Uncomment to reset database
+reset_database()
+class TimeSlotRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    employee_name = db.Column(db.String(100), nullable=False)
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=False)
+    status = db.Column(db.String(20), default='pending')  # pending, approved, rejected
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        
+        if user and user.check_password(password):
+            login_user(user)
+            return redirect(url_for('calendar_view'))
+        else:
+            flash('Invalid username or password')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+@app.route('/')
+@login_required
+def calendar_view():
+    # Get current month and year
+    now = datetime.now()
+    year = now.year
+    month = now.month
+
+    # Create calendar matrix
+    cal = calendar.monthcalendar(year, month)
+    
+    # Fetch bookings for the current month
+    bookings = Booking.query.filter(
+        Booking.start_time >= datetime(year, month, 1),
+        Booking.start_time < datetime(year, month + 1 if month < 12 else 1, 1 if month < 12 else 1)
+    ).all()
+
+    return render_template('calendar.html', 
+                           calendar=cal, 
+                           year=year, 
+                           month=month, 
+                           month_name=calendar.month_name[month],
+                           bookings=bookings)
+
+@app.route('/request_slot', methods=['GET', 'POST'])
+@login_required
+def request_slot():
+    if request.method == 'POST':
+        start_time = datetime.strptime(request.form['start_time'], '%Y-%m-%dT%H:%M')
+        end_time = datetime.strptime(request.form['end_time'], '%Y-%m-%dT%H:%M')
+        
+        # Create a new time slot request
+        new_request = TimeSlotRequest(
+            employee_name=current_user.username,
+            start_time=start_time,
+            end_time=end_time,
+            user_id=current_user.id
+        )
+        
+        db.session.add(new_request)
+        db.session.commit()
+        
+        flash('Time slot request submitted')
+        return redirect(url_for('calendar_view'))
+    
+    return render_template('request_slot.html')
+
+# Modify admin routes to check for admin privileges
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated or not current_user.is_admin:
+            flash('You do not have permission to access this page', 'danger')
+            return redirect(url_for('calendar_view'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/admin/requests')
+@login_required
+@admin_required
+def manage_requests():
+    # Fetch pending time slot requests
+    requests = TimeSlotRequest.query.filter_by(status='pending').all()
+    
+    return render_template('manage_requests.html', requests=requests)
+
+@app.route('/admin/approve_request/<int:request_id>', methods=['POST'])
+@login_required
+@admin_required
+def approve_request(request_id):
+    time_slot_request = TimeSlotRequest.query.get_or_404(request_id)
+    
+    # Check for overlapping bookings
+    overlapping = Booking.query.filter(
+        (Booking.start_time < time_slot_request.end_time) & 
+        (Booking.end_time > time_slot_request.start_time)
+    ).first()
+    
+    if overlapping:
+        flash('This time slot conflicts with an existing booking')
+        return redirect(url_for('manage_requests'))
+    
+    # Create a new booking
+    new_booking = Booking(
+        employee_name=time_slot_request.employee_name,
+        start_time=time_slot_request.start_time,
+        end_time=time_slot_request.end_time,
+        user_id=time_slot_request.user_id,
+        status='approved'
+    )
+    
+    # Update request status
+    time_slot_request.status = 'approved'
+    
+    db.session.add(new_booking)
+    db.session.commit()
+    
+    flash('Time slot request approved')
+    return redirect(url_for('manage_requests'))
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    # Check if any admin account exists
+    admin_exists = User.query.filter_by(is_admin=True).first()
+    
+    if current_user.is_authenticated:
+        return redirect(url_for('calendar_view'))
+    
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        user = User.query.filter_by(username=username).first()
+        if user:
+            flash('Username already exists', 'danger')
+            return redirect(url_for('register'))
+        
+        # Always create non-admin users
+        new_user = User(username=username, is_admin=False)
+        new_user.set_password(password)
+        db.session.add(new_user)
+        db.session.commit()
+        
+        flash('Account created successfully! Please log in.', 'success')
+        return redirect(url_for('login'))
+    
+    return render_template('register.html')
+
+@app.route('/admin/reject_request/<int:request_id>', methods=['POST'])
+@login_required
+@admin_required
+def reject_request(request_id):
+    time_slot_request = TimeSlotRequest.query.get_or_404(request_id)
+    time_slot_request.status = 'rejected'
+    
+    db.session.commit()
+    
+    flash('Time slot request rejected')
+    return redirect(url_for('manage_requests'))
+
+# Initial admin user creation (run once)
+def create_admin():
+    with app.app_context():
+        # Check if admin already exists
+        admin = User.query.filter_by(username='admin').first()
+        if not admin:
+            admin = User(username='admin', is_admin=True)
+            admin.set_password('your_admin_password')
+            db.session.add(admin)
+            db.session.commit()
+            print("Admin user created")
+
+if __name__ == '__main__':
+    # Uncomment to create admin user
+    create_admin()
+    # app.run(debug=True)
+
+# File: templates\base.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Work Scheduler</title>
+    {% block styles %}
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+    {% endblock %}
+</head>
+<body>
+    {% block navbar %}
+    <nav class="navbar navbar-default">
+        <div class="container">
+            <div class="navbar-header">
+                <a class="navbar-brand" href="{{ url_for('calendar_view') }}">Work Scheduler</a>
+            </div>
+            <ul class="nav navbar-nav navbar-right">
+                {% if current_user.is_authenticated %}
+                <li><a href="{{ url_for('logout') }}">Logout</a></li>
+                {% else %}
+                <li><a href="{{ url_for('login') }}">Login</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </nav>
+    {% endblock %}
+
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+        
+        {% block content %}{% endblock %}
+    </div>
+
+    {% block scripts %}
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+        <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+    {% endblock %}
+</body>
+</html>
+
+# File: templates\calendar.html
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2 class="text-center">{{ month_name }} {{ year }} Calendar</h2>
+        
+        {% if current_user.is_admin %}
+        <div class="text-right">
+            <a href="{{ url_for('manage_requests') }}" class="btn btn-warning">Manage Requests</a>
+        </div>
+        {% endif %}
+        
+        <a href="{{ url_for('request_slot') }}" class="btn btn-primary">Request Time Slot</a>
+        
+        <table class="table table-bordered calendar">
+            <thead>
+                <tr>
+                    <th>Sun</th>
+                    <th>Mon</th>
+                    <th>Tue</th>
+                    <th>Wed</th>
+                    <th>Thu</th>
+                    <th>Fri</th>
+                    <th>Sat</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for week in calendar %}
+                <tr>
+                    {% for day in week %}
+                    <td class="{{ 'calendar-day' if day != 0 else 'calendar-empty' }}">
+                        {% if day != 0 %}
+                            {{ day }}
+                            {% for booking in bookings %}
+                                {% if booking.start_time.day == day and booking.start_time.month == month and booking.start_time.year == year %}
+                                    <div class="booking-info">
+                                        {{ booking.employee_name }}<br>
+                                        {{ booking.start_time.strftime('%H:%M') }} - 
+                                        {{ booking.end_time.strftime('%H:%M') }}
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+.calendar-day {
+    height: 100px;
+    vertical-align: top !important;
+}
+.calendar-empty {
+    background-color: #f4f4f4;
+}
+.booking-info {
+    background-color: #007bff;
+    color: white;
+    margin: 2px;
+    padding: 2px;
+    border-radius: 3px;
+    font-size: 0.8em;
+}
+</style>
+{% endblock %}
+
+# File: templates\login.html
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6 col-md-offset-3">
+        <h2 class="text-center">Login</h2>
+        <form method="POST">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" class="form-control" id="username" name="username" required>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" class="form-control" id="password" name="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">Login</button>
+        </form>
+        <p class="text-center mt-3">Don't have an account? <a href="{{ url_for('register') }}">Register here</a></p>
+    </div>
+</div>
+{% endblock %}
+
+# File: templates\manage_requests.html
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-10 col-md-offset-1">
+        <h2>Manage Time Slot Requests</h2>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Employee</th>
+                    <th>Start Time</th>
+                    <th>End Time</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for request in requests %}
+                <tr>
+                    <td>{{ request.employee_name }}</td>
+                    <td>{{ request.start_time.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td>{{ request.end_time.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td>
+                        <form method="POST" action="{{ url_for('approve_request', request_id=request.id) }}" style="display:inline;">
+                            <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                        </form>
+                        <form method="POST" action="{{ url_for('reject_request', request_id=request.id) }}" style="display:inline;">
+                            <button type="submit" class="btn btn-danger btn-sm">Reject</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+# File: templates\register.html
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6 col-md-offset-3">
+        <h2 class="text-center">Register</h2>
+        <form method="POST">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" class="form-control" id="username" name="username" required>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" class="form-control" id="password" name="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">Register</button>
+        </form>
+        <p class="text-center mt-3">Already have an account? <a href="{{ url_for('login') }}">Login here</a></p>
+    </div>
+</div>
+{% endblock %}
+
+# File: templates\request_slot.html
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6 col-md-offset-3">
+        <h2>Request Time Slot</h2>
+        <form method="POST">
+            <div class="form-group">
+                <label for="start_time">Start Time:</label>
+                <input type="datetime-local" class="form-control" id="start_time" name="start_time" required>
+            </div>
+            <div class="form-group">
+                <label for="end_time">End Time:</label>
+                <input type="datetime-local" class="form-control" id="end_time" name="end_time" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Submit Request</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+# File: templates\schedule.html
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2 class="text-center">{{ month_name }} {{ year }} Calendar</h2>
+        
+        {% if current_user.is_admin %}
+        <div class="text-right">
+            <a href="{{ url_for('manage_requests') }}" class="btn btn-warning">Manage Requests</a>
+        </div>
+        {% endif %}
+        
+        <a href="{{ url_for('request_slot') }}" class="btn btn-primary">Request Time Slot</a>
+        
+        <table class="table table-bordered calendar">
+            <thead>
+                <tr>
+                    <th>Sun</th>
+                    <th>Mon</th>
+                    <th>Tue</th>
+                    <th>Wed</th>
+                    <th>Thu</th>
+                    <th>Fri</th>
+                    <th>Sat</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for week in calendar %}
+                <tr>
+                    {% for day in week %}
+                    <td class="{{ 'calendar-day' if day != 0 else 'calendar-empty' }}">
+                        {% if day != 0 %}
+                            {{ day }}
+                            {% for booking in bookings %}
+                                {% if booking.start_time.day == day and booking.start_time.month == month and booking.start_time.year == year %}
+                                    <div class="booking-info">
+                                        {{ booking.employee_name }}<br>
+                                        {{ booking.start_time.strftime('%H:%M') }} - 
+                                        {{ booking.end_time.strftime('%H:%M') }}
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+.calendar-day {
+    height: 100px;
+    vertical-align: top !important;
+}
+.calendar-empty {
+    background-color: #f4f4f4;
+}
+.booking-info {
+    background-color: #007bff;
+    color: white;
+    margin: 2px;
+    padding: 2px;
+    border-radius: 3px;
+    font-size: 0.8em;
+}
+</style>
+{% endblock %}
+```
+
+`templates/request_slot.html`:
+```html
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6 col-md-offset-3">
+        <h2>Request Time Slot</h2>
+        <form method="POST">
+            <div class="form-group">
+                <label for="start_time">Start Time:</label>
+                <input type="datetime-local" class="form-control" id="start_time" name="start_time" required>
+            </div>
+            <div class="form-group">
+                <label for="end_time">End Time:</label>
+                <input type="datetime-local" class="form-control" id="end_time" name="end_time" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Submit Request</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+```
+
+`templates/manage_requests.html`:
+```html
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-10 col-md-offset-1">
+        <h2>Manage Time Slot Requests</h2>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Employee</th>
+                    <th>Start Time</th>
+                    <th>End Time</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for request in requests %}
+                <tr>
+                    <td>{{ request.employee_name }}</td>
+                    <td>{{ request.start_time.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td>{{ request.end_time.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td>
+                        <form method="POST" action="{{ url_for('approve_request', request_id=request.id) }}" style="display:inline;">
+                            <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                        </form>
+                        <form method="POST" action="{{ url_for('reject_request', request_id=request.id) }}" style="display:inline;">
+                            <button type="submit" class="btn btn-danger btn-sm">Reject</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+```
+
+Update the base template to include logout:
+```html
+{% extends "bootstrap/base.html" %}
+
+{% block navbar %}
+<nav class="navbar navbar-default">
+    <div class="container">
+        <div class="navbar-header">
+            <a class="navbar-brand" href="{{ url_for('calendar_view') }}">Work Scheduler</a>
+        </div>
+        <ul class="nav navbar-nav navbar-right">
+            {% if current_user.is_authenticated %}
+            <li><a href="{{ url_for('logout') }}">Logout</a></li>
+            {% endif %}
+        </ul>
+    </div>
+</nav>
+{% endblock %}
+

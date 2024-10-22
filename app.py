@@ -9,7 +9,6 @@ from functools import wraps
 import os
 
 
-
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///scheduler.db').replace('postgres://', 'postgresql://')
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fallback_secret_key')
@@ -149,6 +148,18 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+@app.route('/admin/delete_booking/<int:booking_id>', methods=['POST'])
+@login_required
+@admin_required
+def delete_booking(booking_id):
+    booking = Booking.query.get_or_404(booking_id)
+    
+    db.session.delete(booking)
+    db.session.commit()
+    
+    flash('Booking deleted successfully', 'success')
+    return redirect(url_for('calendar_view'))
+
 @app.route('/admin/requests')
 @login_required
 @admin_required
@@ -231,6 +242,23 @@ def reject_request(request_id):
     
     flash('Time slot request rejected')
     return redirect(url_for('manage_requests'))
+
+@app.route('/calendar/<int:year>/<int:month>')
+@login_required
+def calendar_view_month(year, month):
+    cal = calendar.monthcalendar(year, month)
+    
+    bookings = Booking.query.filter(
+        Booking.start_time >= datetime(year, month, 1),
+        Booking.start_time < datetime(year, month + 1 if month < 12 else 1, 1 if month < 12 else 1)
+    ).all()
+
+    return render_template('calendar.html', 
+                           calendar=cal, 
+                           year=year, 
+                           month=month, 
+                           month_name=calendar.month_name[month],
+                           bookings=bookings)
 
 # Initial admin user creation (run once)
 def create_admin():
